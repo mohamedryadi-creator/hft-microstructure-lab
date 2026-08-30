@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hfx"
+version = "0.1.0"
+description = "High-frequency market microstructure: price formation, market design, reinforcement learning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Mohamed Ryadi" }]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# Only needed to *fetch and rebuild* the dataset.  Every notebook runs on the
+# committed results/ without them, and the test suite never touches the network.
+data = ["pyarrow>=14.0"]
+dev = [
+    "pytest>=7.4",
+    "jupyter>=1.0",
+    "nbconvert>=7.0",
+    "nbformat>=5.9",
+    "ipykernel>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::RuntimeWarning"]

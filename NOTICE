@@ -1,0 +1,22 @@
+This product includes data from the following source.
+
+Nasdaq TotalView-ITCH 5.0
+  Complete order-by-order message files for seven US equity trading days,
+  retrieved from https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/ where Nasdaq
+  publishes them for public use.  Each file carries every add, execute, cancel,
+  delete and replace message for every Nasdaq-listed security on that day, with
+  nanosecond timestamps.
+
+  Days used: 2019-01-30, 2019-03-27, 2019-07-30, 2019-08-30, 2019-10-30,
+  2019-12-30 and 2020-01-30.
+
+  No raw or trade-level data is redistributed in this repository.  What is
+  committed is the *derived* measurements in results/ -- fitted exponents,
+  intensity tables, histograms and summary statistics -- together with the code
+  in scripts/ that regenerates them from the source.  The extraction streams
+  each file from the socket and never writes it to disk.
+
+  The format is documented in Nasdaq's TotalView-ITCH 5.0 specification.  The
+  field offsets used here are transcribed in src/hfx/itch/spec.py and checked
+  against an independently written encoder in src/hfx/itch/synth.py, so a
+  mistake in the transcription fails the test suite rather than the analysis.

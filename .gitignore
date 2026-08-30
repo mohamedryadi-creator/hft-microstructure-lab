@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
+
+# Raw and intermediate market data is never committed.  What is committed is the
+# derived measurements in results/ -- small, inspectable, and enough to rerun
+# every notebook without touching the network.
+data/raw/
+data/cache/
+*.gz
+*.parquet
