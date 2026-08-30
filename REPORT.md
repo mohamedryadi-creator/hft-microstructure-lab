@@ -41,7 +41,7 @@ measure.
   never validated says nothing at all.
 
 Every chapter has both legs, and the repository's test suite is the first one:
-63 tests, none touching the network, several of them Monte Carlo studies whose
+82 tests, none touching the network, several of them Monte Carlo studies whose
 tolerances are derived rather than tuned.
 
 ## 3. The data
@@ -425,14 +425,53 @@ faced.
 | **GOOG** | 0.551 | 9.94 | 0.969 | 10.368 | 17.487 | 20.103 |
 
 The fit is only credible where the trades spread over many prices. On the
-seven names where $R^2$ exceeds 0.9 the model's half-spread comes out at 0.59 to
-0.77 of the effective half-spread actually paid, median **0.68**: real makers quote
-wider than the risk-neutral optimum, which is what a model without adverse
-selection should under-predict. On the large-tick names $R^2$ falls to 0.15–0.43 — every
-trade is at the same distance, so the exponential has nothing to bite on, and the
-fitted $k$ says more about the tick than about liquidity. That is a limitation of
-the *asset*, not of the estimator, and it is why the large-tick names are studied
-with queues in chapter 04 instead.
+seven names where $R^2$ exceeds 0.9 the model's half-spread comes out at **0.68**
+of the effective half-spread actually paid. On the large-tick names $R^2$ falls to
+0.15–0.43 — every trade is at the same distance, so the exponential has nothing to
+bite on, and the fitted $k$ says more about the tick than about liquidity. That is
+a limitation of the *asset*, not of the estimator, and it is why the large-tick
+names are studied with queues in chapter 04 instead.
+
+### 8.2 The 0.68 gap, measured rather than asserted
+
+An earlier draft of this report attributed that gap to adverse selection and left
+it there. The data to test it was already present, and the test needs no new
+plumbing: `trades` carries the pre-trade mid and `quotes` carries the whole mid
+path. The decomposition is an identity,
+
+$$s_{\text{effective}} = s_{\text{realized}}(h) + \text{adverse selection}(h),$$
+
+where $s_{\text{realized}}(h) = d\,(p - m_{t+h})$ is what the maker still has $h$
+seconds after the fill. A model with no informed flow in it describes the maker's
+**net** capture, so it is $s_{\text{realized}}$ the closed form should be compared
+against — not $s_{\text{effective}}$, which is what the *taker* pays.
+
+| symbol | median spread (ticks) | effective half-spread | adverse selection (50 ms) | realized half-spread | GLFT model | GLFT / effective | GLFT / realized |
+|---|---|---|---|---|---|---|---|
+| **AAPL** | 2.29 | 0.917 | 0.889 | 0.029 | 0.549 | 0.598 | 19.206 |
+| **NFLX** | 12.14 | 4.262 | 2.506 | 1.756 | 2.894 | 0.679 | 1.649 |
+| **TSLA** | 15.57 | 5.212 | 2.282 | 2.930 | 3.711 | 0.712 | 1.266 |
+| **REGN** | 27.00 | 8.652 | 5.516 | 3.137 | 6.628 | 0.766 | 2.113 |
+| **ISRG** | 39.43 | 13.008 | 6.995 | 6.013 | 9.453 | 0.727 | 1.572 |
+| **AMZN** | 49.86 | 16.783 | 7.598 | 9.185 | 9.991 | 0.595 | 1.088 |
+| **GOOG** | 53.71 | 17.487 | 8.731 | 8.755 | 10.368 | 0.593 | 1.184 |
+
+**The result brackets the model.** GLFT sits at 0.68 of what the taker pays and
+about 1.6 times what the maker keeps at a fifty-millisecond horizon — **between
+the two on seven symbols out of seven**. So adverse selection is not merely
+"consistent with" the gap; it is more than large enough to account for it, and the
+prediction stated in advance — that adding it would move the ratio from 0.68
+toward 1 — overshoots rather than falls short.
+
+What sits in between is selectivity. The average adverse-selection cost is
+measured over *all* trades; a maker that chooses when to quote pays less than the
+average. Chapter 08 measures the value of exactly that choice, in the same units,
+and finds it is the difference between a losing business and a profitable one.
+
+There is also a mechanical reading of the horizon. The correction is already too
+large at ten milliseconds on the widest-spread names, which says the relevant
+horizon for a maker is short: what it loses is the immediate re-pricing that
+follows its own fill, not the drift over the next minute.
 
 ## 9. Chapter 06 — Make-take fees as a principal-agent problem
 
@@ -472,6 +511,155 @@ exchange that pays too little loses its maker, and the optimum becomes a corner.
 Give the principal a regulator's taste for market quality instead of a
 shareholder's and the optimal rebate rises monotonically: the exchange is being
 paid to buy a tighter market.
+
+## 9bis. Chapter 07 — What the book predicts
+
+Chapter 04 fitted a model of the queues and never asked it about prices. But the
+price moves when a queue empties, so the model does have an opinion about
+direction, and it is exact: from queue sizes $(q_b, q_a)$, **which queue empties
+first?** That is a first-passage problem on a two-dimensional Markov chain,
+
+$$u(b,a) = \sum_{(b',a')} p\big((b,a)\to(b',a')\big)\,u(b',a'),$$
+
+with $u=1$ where the ask has emptied and $0$ where the bid has. Solving it gives
+$\mathbb{P}(\text{up} \mid q_b, q_a)$ — **a prediction about prices that was
+never fitted to a price.** The transition probabilities are the estimated
+intensities and the jumps are the measured order sizes; the joint tables it needs
+were already being computed by the replay and were, until now, never saved.
+
+Against it: a logistic regression and gradient boosting, trained on the first five
+ITCH days and tested on the last two. The split is by day, because snapshots half
+a second apart are near-duplicates and a split inside a day measures
+memorisation. Snapshots are taken on a fixed clock rather than at price changes —
+a book observed just after a change is a freshly regenerated queue, the least
+informative instant there is, and sampling only there would flatter the model.
+
+| symbol | median spread (ticks) | AUC analytic | AUC logistic (imbalance) | AUC logistic (all) | AUC boosted | Brier analytic | Brier logistic | fallback share |
+|---|---|---|---|---|---|---|---|---|
+| **CSCO** | 1.00 | 0.627 | 0.627 | 0.628 | 0.607 | 0.2493 | 0.2386 | 0.17 |
+| **INTC** | 1.00 | 0.642 | 0.643 | 0.642 | 0.623 | 0.2434 | 0.2355 | 0.16 |
+| **MU** | 1.00 | 0.614 | 0.617 | 0.616 | 0.612 | 0.2461 | 0.2393 | 0.44 |
+| **SIRI** | 1.00 | 0.669 | 0.662 | 0.740 | 0.642 | 0.2164 | 0.2364 | 0.36 |
+| **MSFT** | 1.14 | 0.582 | 0.585 | 0.586 | 0.586 | 0.2715 | 0.2461 | 0.63 |
+| **AAPL** | 2.29 | 0.565 | 0.572 | 0.576 | 0.567 | 0.2634 | 0.2463 | 0.84 |
+| **NFLX** | 12.14 | 0.548 | 0.558 | 0.548 | 0.532 | 0.2784 | 0.2485 | 0.90 |
+| **TSLA** | 15.57 | 0.540 | 0.542 | 0.538 | 0.536 | 0.2839 | 0.2491 | 0.89 |
+| **REGN** | 27.00 | 0.565 | 0.580 | 0.548 | 0.571 | 0.2571 | 0.2474 | 0.95 |
+| **ISRG** | 39.43 | 0.570 | 0.559 | 0.549 | 0.541 | 0.2583 | 0.2530 | 0.95 |
+| **AMZN** | 49.86 | 0.537 | 0.545 | 0.542 | 0.555 | 0.2771 | 0.2481 | 0.93 |
+| **GOOG** | 53.71 | 0.561 | 0.564 | 0.566 | 0.545 | 0.2805 | 0.2478 | 0.92 |
+
+**Three things, and the first is the striking one.**
+
+**The model ranks as well as anything fitted to the answer.** Across twelve
+symbols the median gap in AUC between the never-fitted surface and a logistic
+regression on the same data is **+0.001**, and the model wins outright on three of
+them. A description of how queues arrive and leave, estimated from event counts
+alone, orders the next price move as well as a regression shown the moves
+themselves. The one real exception is SIRI, where the fitted model gains 0.071 —
+SIRI's queues are the deepest in the panel and the flow features carry more there
+than the two best queues alone.
+
+**It does not know how much.** Ranking is not probability. The analytic surface
+predicts probabilities from 0.07 to 0.94 on INTC where the realised frequencies
+run from 0.25 to 0.80; its Brier score is accordingly worse than the logistic's on
+most of the panel. The mechanism is in the model's own construction: queues evolve
+independently and regenerate when they empty, with nothing representing liquidity
+that arrives *because* a queue is about to lose — and that replenishment is what
+pulls realised probabilities back toward a half.
+
+**Flexibility bought nothing.** Gradient boosting on eight features is worse than
+a logistic regression on one — queue imbalance — on ten of twelve symbols. The
+signal is one-dimensional, and a model free to find interactions mostly finds ones
+that do not survive to the next week.
+
+Predictability tracks the tick like everything else here: AUC 0.67 on the
+one-tick names, 0.54 on the fifty-tick ones. The book informs where queues exist.
+
+## 9ter. Chapter 08 — An agent in a book that reacts
+
+Chapter 05's environment has no book in it: fills are a Poisson process and the
+mid diffuses on its own, so nothing connects a fill to what the price does next
+and a maker is never picked off. Chapter 08's environment is chapter 04's book
+with a maker standing in it — the same intensities, sizes and regeneration law —
+where the maker's **position in the queue is tracked** and it trades only once the
+size in front of it is gone.
+
+Adverse selection then needs no modelling. Being filled on the bid means the bid
+queue was being consumed; a queue being consumed is one on its way to empty; and a
+bid queue that empties takes the price down. The maker is bought into a falling
+price by the very mechanism that filled it.
+
+The environment is checked against the market it was fitted to: it reproduces the
+real rate of best-price changes within a factor 1.0–1.4 on the one-tick names, and
+under-predicts it on the wide-spread ones — inheriting, honestly, exactly the
+accuracy chapter 04 reports for the same model.
+
+| symbol | median spread (ticks) | blind (1e-4/s) | sighted (1e-4/s) | value of sight | imbalance rule | largest se | break-even rebate (ticks) | deep Q-network |
+|---|---|---|---|---|---|---|---|---|
+| **CSCO** | 1.00 | -1.003 | 2.299 | 3.301 | -0.60 | 0.189 | 0.06 | -2.548 |
+| **INTC** | 1.00 | -1.366 | 3.023 | 4.389 | -0.60 | 0.025 | 0.06 | -2.116 |
+| **MU** | 1.00 | 0.322 | 4.267 | 3.945 | -0.60 | 0.249 | 0.00 | -3.036 |
+| **SIRI** | 1.00 | -1.531 | -0.017 | 1.515 | 0.20 | 0.031 | 0.28 | -1.513 |
+| **MSFT** | 1.14 | 3.220 | 13.085 | 9.866 | -0.60 | 0.246 | 0.00 | -5.787 |
+| **AAPL** | 2.29 | -4.355 | 2.501 | 6.856 | -0.40 | 0.092 | 0.07 | -7.972 |
+| **NFLX** | 12.14 | -5.481 | -0.455 | 5.026 | 0.20 | 0.316 | 0.25 | -7.969 |
+| **TSLA** | 15.57 | -6.196 | -0.515 | 5.681 | 0.20 | 0.167 | 0.27 | -5.781 |
+| **REGN** | 27.00 | -1.351 | -0.189 | 1.162 | 0.20 | 0.055 | 0.30 | -1.230 |
+| **ISRG** | 39.43 | -1.277 | -0.179 | 1.099 | 0.20 | 0.047 | 0.35 | -0.773 |
+| **AMZN** | 49.86 | -4.984 | -0.881 | 4.104 | 0.20 | 0.152 | 0.30 | -6.669 |
+| **GOOG** | 53.71 | -1.817 | -0.387 | 1.429 | 0.20 | 0.127 | 0.21 | -2.981 |
+
+**The result.** A maker that cannot see the book **loses money on ten of the
+twelve symbols**, and no inventory rule rescues it — the more it quotes, the
+faster it loses. Adding one rule, refusing to bid when the bid queue is thin
+relative to the ask, is worth between +1.1 and +9.9 in units of $10^{-4}$ per
+second and is **positive on all twelve**, against standard errors two orders of
+magnitude smaller. Measured on identical simulated price paths — the
+environment's randomness does not depend on the agent, so every comparison is
+paired — the effect is tens of standard errors wide.
+
+Where that is enough to make the business profitable is, again, the tick. The
+sighted maker earns a positive return on the five names whose spread is at most
+about two ticks and stays marginally negative on the wide-spread ones — which is
+where chapter 04 already reported that the queue mechanism does not describe the
+market, so the environment there is not one a maker should be believed in.
+
+The rule the search picks moves the same way. On the tight-spread names it is
+permissive, refusing only badly lopsided books ($I \geq -0.6$); on the
+wide-spread ones it tightens to $I \geq +0.2$, quoting only when the book is
+already leaning its way. Thin queues carry less information, so the maker has to
+demand more of them before committing.
+
+**And it answers chapter 06 from the other side.** A rebate is paid per fill and
+does not change the book, so for a fixed policy
+$\text{reward}(z) = \text{reward}(0) + z\times\text{fills per second}$ exactly;
+each family's frontier is the upper envelope of a set of straight lines and costs
+nothing beyond the simulations already run. Where it crosses zero is the rebate an
+exchange must pay to keep that kind of maker in business. Blind makers need one;
+makers who can read the queues do not. **The rebate is the price of the
+information the maker lacks.**
+
+### The methodological finding
+
+Four ways of solving this were tried and only one worked, and the reason is
+arithmetic rather than tuning. The per-step reward is dominated by marking
+inventory across a price move: with a few units of inventory and a one-cent tick
+its standard deviation is near $3\times10^{-2}$, while the value difference
+between two quoting policies is near $2\times10^{-5}$ per step. Any method that
+estimates a value function from single-step rewards needs of order
+$(3\times10^{-2}/2\times10^{-5})^2 \approx 10^6$ samples **per state-action
+cell** before its argmax is anything but the luckiest estimate.
+
+| method | outcome |
+|---|---|
+| Tabular Q-learning — the algorithm that recovers the closed form in chapter 05 | undertrades; beaten by quoting at the touch unconditionally |
+| Model-based tabular RL (average the rewards, then solve) | works at 13 states, fails at 156 |
+| Deep Q-network | does not converge; the TD loss *rises* through training, and it is beaten by the threshold policy on **12 of 12** symbols |
+| Direct policy comparison on common random numbers | resolves the effect at tens of standard errors |
+
+That is not a fact about market making. It is a fact about where the variance
+sits, and it is worth checking before reaching for a learner.
 
 ---
 
@@ -545,7 +733,7 @@ anyway.
 
 ```bash
 make setup        # install the package and the test dependencies
-make test         # 63 tests, no network
+make test         # 82 tests, no network
 make data         # stream the seven ITCH days   (~90 min, ~31 GB transferred)
 make study        # rebuild results/ from the extracted messages   (~15 min)
 make build        # regenerate the notebooks from source

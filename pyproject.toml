@@ -15,12 +15,18 @@ dependencies = [
     "scipy>=1.10",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    "scikit-learn>=1.3",
 ]
 
 [project.optional-dependencies]
 # Only needed to *fetch and rebuild* the dataset.  Every notebook runs on the
 # committed results/ without them, and the test suite never touches the network.
 data = ["pyarrow>=14.0"]
+# The deep reinforcement learner of chapter 08.  Deliberately optional: the
+# tabular agent carries the chapter on its own, the test suite skips the deep
+# variant when torch is absent, and CI never installs it -- so a clone stays
+# light and the build stays fast.
+deep = ["torch>=2.0"]
 dev = [
     "pytest>=7.4",
     "jupyter>=1.0",

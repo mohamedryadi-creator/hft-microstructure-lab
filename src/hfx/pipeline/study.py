@@ -109,6 +109,39 @@ def study_symbol_day(events, symbol: str, date: str, rng=None) -> tuple[dict, di
     )
     row["quoted_half_spread_ticks"] = float(np.mean(tr["ask"] - tr["bid"]) / (2 * TICK))
 
+    # ---------- adverse selection: what the maker does not keep ----------
+    # The effective half-spread is what the taker pays at the instant of the
+    # trade.  The maker only keeps it if the mid stays put, and it does not: a
+    # buy is followed by an up-move on average, so the maker who sold it is
+    # holding a position that has already moved against them.  The difference is
+    # the adverse-selection cost, and it needs no new data -- the pre-trade mid
+    # is already on every trade and the mid path is already in the quotes.
+    # The decomposition is an identity: what the taker pays at the instant of
+    # the trade is what the maker keeps plus what the mid takes back.
+    #     s_effective = s_realized(h) + adverse_selection(h)
+    # A model with no informed flow in it -- Avellaneda-Stoikov, and the closed
+    # form of chapter 05 -- describes the maker's *net* capture, so it is
+    # s_realized it should be compared against, not s_effective.  Horizons run
+    # down to ten milliseconds because the correction is already large there.
+    horizons = np.array([0.01, 0.05, 0.1, 1.0, 10.0, 60.0])
+    q_ts = quotes["ts"]
+    q_mid = (quotes["bid"] + quotes["ask"]) / 2.0
+    drift = np.full(horizons.size, np.nan)
+    if q_ts.size > 100:
+        for h, horizon in enumerate(horizons):
+            later = np.searchsorted(q_ts, tr["ts"] + int(horizon * 1e9), side="right") - 1
+            ok = (later >= 0) & (tr["ts"] + horizon * 1e9 <= q_ts[-1])
+            if ok.sum() > 100:
+                signed = tr["side"][ok] * (q_mid[later[ok]] - mid[ok])
+                drift[h] = float(np.mean(signed) / TICK)
+        for h, horizon in enumerate(horizons):
+            row[f"adverse_selection_{horizon:g}s_ticks"] = drift[h]
+            row[f"realized_half_spread_{horizon:g}s_ticks"] = (
+                row["effective_half_spread_ticks"] - drift[h]
+            )
+    curves["impact_horizons"] = horizons
+    curves["impact_ticks"] = drift
+
     # ---------- chapter 05 input: the fill intensity curve ----------------
     distance = (tr["side"] * (tr["price"] - mid)).astype(float) / PRICE_SCALE
     grid = np.linspace(0.0, np.percentile(distance, 99.5), 24)
@@ -208,6 +241,10 @@ def study_symbol_day(events, symbol: str, date: str, rng=None) -> tuple[dict, di
     lam, valid = qr.intensities(ev_counts, ev_time, min_seconds=2.0)
     curves["qr_lambda"] = lam
     curves["qr_time"] = ev_time
+    # The joint two-queue tables: the same estimates conditioned on both sides
+    # at once, which is what chapter 07 solves the first-passage problem on.
+    curves["qr_events2"] = out.qr_events2
+    curves["qr_time2"] = out.qr_time2
     curves["qr_regen"] = out.regen_hist
     curves["size_hist"] = out.size_hist
     curves["fill_counts"] = out.fill_counts

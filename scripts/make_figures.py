@@ -19,7 +19,7 @@ IMG = os.path.join(ROOT, "docs", "img")
 
 def overview(P, C, day="2019-01-30"):
     use_style()
-    fig, axes = plt.subplots(1, 4, figsize=(17, 3.8))
+    fig, axes = plt.subplots(1, 5, figsize=(21, 3.8))
 
     g = P.groupby("symbol").agg(
         price=("price", "mean"), spread=("median_spread_ticks", "mean"),
@@ -76,6 +76,27 @@ def overview(P, C, day="2019-01-30"):
     ax.set_xlabel("realized volatility (%/day)")
     ax.set_ylabel("queue-reactive volatility (%/day)")
     ax.set_title("Volatility out of queues alone")
+
+    ax = axes[4]
+    try:
+        agents = __import__("pandas").read_csv(os.path.join(ROOT, "results", "agents.csv"))
+        agents = agents.set_index("symbol")
+        for sym, r in g.iterrows():
+            if sym not in agents.index:
+                continue
+            blind = agents.loc[sym, "blind_reward"] * 1e4
+            sighted = agents.loc[sym, "sighted_reward"] * 1e4
+            ax.plot([0, 1], [blind, sighted], color=colour_for(r.spread), lw=1.2,
+                    marker="o", ms=4)
+            label(ax, 1, sighted, sym)
+        ax.axhline(0.0, color="0.4", lw=1)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["cannot see\nthe book", "sees\nthe book"])
+        ax.set_xlim(-0.25, 1.45)
+        ax.set_ylabel(r"market maker's reward, $10^{-4}$/s")
+        ax.set_title("What the book is worth to a maker")
+    except FileNotFoundError:
+        ax.axis("off")
 
     plt.tight_layout()
     os.makedirs(IMG, exist_ok=True)

@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 NB := $(wildcard notebooks/*.ipynb)
 
-.PHONY: setup setup-data test kernel notebooks build study clean all
+.PHONY: setup setup-data setup-deep test kernel notebooks build study learn agents clean all
 
 setup:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -21,10 +21,26 @@ data: setup-data
 data-quick: setup-data
 	$(PYTHON) scripts/build_dataset.py --quick
 
+# The deep reinforcement learner of chapter 08 is optional.  Everything else
+# runs without torch, the test suite skips the deep variant when it is absent,
+# and continuous integration never installs it.
+setup-deep:
+	$(PYTHON) -m pip install -e ".[dev,data,deep]"
+
 # Turn the extracted messages into the committed measurements in results/.
 # Resumable in the same way: symbol-days already in panel.csv are skipped.
 study:
 	$(PYTHON) scripts/run_study.py
+
+# Chapter 07: fit and evaluate the predictability of the book, out of sample.
+# Trains on the first five ITCH days and tests on the last two.
+learn:
+	$(PYTHON) scripts/run_learning.py
+
+# Chapter 08: search the quoting policies in the queue-reactive environment.
+# Add --deep to also train the torch agent, if it is installed.
+agents:
+	$(PYTHON) scripts/run_agents.py
 
 test:
 	$(PYTHON) -m pytest

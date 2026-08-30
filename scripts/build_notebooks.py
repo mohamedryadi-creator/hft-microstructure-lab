@@ -794,6 +794,327 @@ thing a real fee schedule is designed against.  The single-exchange answer
 $z^\\star = c - 1/k$ is a benchmark to reason from, not a recommendation."""),
 ]
 
+# --------------------------------------------------------------------------
+NOTEBOOKS["07_what_the_book_predicts.ipynb"] = [
+    md("""# 07 — What the book predicts, and what the model thinks it predicts
+
+Chapter 04 fitted a model of the queues and never asked it about prices.  But the
+price moves when a queue empties, so the model does have an opinion about
+direction, and it is exact: starting from queue sizes $(q_b, q_a)$, **which queue
+empties first?**  That is a first-passage problem on a two-dimensional Markov
+chain, and solving it gives $\\mathbb{P}(\\text{up} \\mid q_b, q_a)$ — a prediction
+about prices **that was never fitted to a price**.
+
+Next to it sit two models that were: a logistic regression, and gradient boosting
+on a wider state.  The chapter is the comparison.
+
+Snapshots are taken on a fixed half-second clock rather than at price changes.  A
+book observed immediately after a change is a freshly regenerated queue, the least
+informative instant there is, and sampling only there would flatter the model."""),
+    code(HEADER + """
+L = pd.read_csv(os.path.join("..", "results", "learning.csv"))
+LC = dict(np.load(os.path.join("..", "results", "learning.npz")))
+print(f"{L.symbol.nunique()} symbols, {L.model.nunique()} models, "
+      f"{int(L[L.scope=='common'].n.iloc[0]):,} test snapshots on the first")"""),
+    md("""## Ground truth: a chain we choose
+
+Before the surface is read off real intensities it has to be right.  A symmetric
+book must be a coin flip whatever the queues, and the linear solve must agree
+with a plain simulation of the same chain."""),
+    code('''from hfx.predict import firstpassage as fp
+
+grid = 16
+lam = np.zeros((3, grid)); lam[0, :], lam[1, :], lam[2, :] = 2.0, 1.0, 1.0
+probs, steps = np.array([1.0]), np.array([1])
+u, _fallback = fp.absorption_probability(lam, probs, steps, grid=grid)
+print("balanced book:", np.round([u[k, k] for k in range(1, 8)], 4))
+assert np.allclose([u[k, k] for k in range(1, 8)], 0.5, atol=1e-9)
+
+rng = np.random.default_rng(0)
+for start in [(3, 3), (2, 6), (6, 2)]:
+    mc = fp.simulate_absorption(lam, probs, steps, start, 4000, rng=rng, grid=grid)
+    print(f"  start {start}: linear solve {u[start]:.3f}   monte carlo {mc:.3f}")
+    assert abs(u[start] - mc) < 4 * np.sqrt(0.25 / 4000)'''),
+    md("""## The surface, on a real book
+
+Estimated from the training days only, and never shown an outcome."""),
+    code('''fig, axes = subplots(1, 3, figsize=(13, 3.6))
+for ax, sym in zip(axes, ["SIRI", "INTC", "AAPL"]):
+    surface = LC[f"{sym}|surface_analytic"]
+    im = ax.imshow(surface.T, origin="lower", vmin=0, vmax=1, cmap="RdBu_r", aspect="auto")
+    ax.set_title(sym); ax.set_xlabel("bid queue (average event sizes)")
+    ax.set_xlim(0, 15); ax.set_ylim(0, 15)
+axes[0].set_ylabel("ask queue")
+fig.colorbar(im, ax=axes, label="model P(up)", fraction=0.02)'''),
+    md("""## Does it rank states as well as something fitted to the answer?
+
+Trained on the first five ITCH days, tested on the last two.  The split is by
+day: snapshots half a second apart are near-duplicates, so a split inside a day
+measures memorisation.  Everything is scored on the subset where the model's
+surface is defined, so the comparison is like for like."""),
+    code('''common = L[L.scope == "common"].pivot_table(index="symbol", columns="model", values="auc")
+spread = P.groupby("symbol").median_spread_ticks.mean()
+common.insert(0, "spread (ticks)", spread)
+order = common.sort_values("spread (ticks)").index
+cols = ["spread (ticks)", "analytic", "logistic_imbalance", "logistic_all", "boosted_all"]
+print(common.loc[order, cols].round(3).to_string())
+gap = common["logistic_all"] - common["analytic"]
+print(f"\\nfitted minus never-fitted: median {gap.median():+.4f}, worst {gap.abs().max():.4f}")
+print(f"the never-fitted model wins outright on {(gap < 0).sum()} of {len(gap)} symbols")
+assert gap.median() < 0.01 and gap.abs().max() < 0.10'''),
+    code('''fig, axes = subplots(1, 2, figsize=(11, 3.8))
+ax = axes[0]
+for sym in order:
+    x, y = common.loc[sym, "analytic"], common.loc[sym, "logistic_all"]
+    ax.scatter(x, y, color=colour_for(common.loc[sym, "spread (ticks)"]), s=45)
+    ax.annotate(sym, (x, y), fontsize=7, xytext=(3, 3), textcoords="offset points")
+lim = [0.52, 0.70]; ax.plot(lim, lim, color="0.6", lw=1, ls="--")
+ax.set_xlim(lim); ax.set_ylim(lim)
+ax.set_xlabel("AUC, queue-reactive model (never fitted)")
+ax.set_ylabel("AUC, logistic regression (fitted)")
+ax.set_title("Ranking: the model is not beaten")
+ax = axes[1]
+for sym in order:
+    x, y = common.loc[sym, "spread (ticks)"], common.loc[sym, "analytic"]
+    ax.scatter(x, y, color=colour_for(x), s=45)
+    ax.annotate(sym, (x, y), fontsize=7, xytext=(3, 3), textcoords="offset points")
+ax.axhline(0.5, color="0.6", lw=1, ls="--"); ax.set_xscale("log")
+ax.set_xlabel("median spread (ticks)"); ax.set_ylabel("AUC")
+ax.set_title("The book informs where queues exist")
+plt.tight_layout()'''),
+    md("""## But it does not know *how much*
+
+Ranking is not probability.  The calibration curve puts what each model predicted
+against what actually happened, and the model that ranks as well as anything is
+systematically overconfident: it reaches for the extremes where the data stays
+near the middle.
+
+The mechanism is in its own construction.  Queues there evolve independently and
+are regenerated when they empty, with nothing that represents liquidity arriving
+*because* a queue is about to lose — and that replenishment is exactly what pulls
+the realised probabilities back towards a half."""),
+    code('''fig, axes = subplots(1, 3, figsize=(13, 3.6))
+for ax, sym in zip(axes, ["SIRI", "INTC", "CSCO"]):
+    for model, style in [("analytic", "o-"), ("logistic_imbalance", "s--")]:
+        c = LC[f"{sym}|{model}|calibration"]
+        ok = np.isfinite(c[:, 0])
+        ax.plot(c[ok, 0], c[ok, 1], style, ms=4, label=model.replace("_", " "))
+    ax.plot([0, 1], [0, 1], color="0.6", lw=1)
+    ax.set_title(sym); ax.set_xlabel("predicted P(up)")
+axes[0].set_ylabel("observed frequency"); axes[0].legend()
+plt.tight_layout()'''),
+    code('''brier = L[L.scope == "common"].pivot_table(index="symbol", columns="model", values="brier")
+print(brier.loc[order, ["analytic", "logistic_imbalance", "logistic_all", "boosted_all"]].round(4).to_string())
+worse = (brier["analytic"] > brier["logistic_imbalance"]).sum()
+print(f"\\nthe never-fitted surface has the worse Brier score on {worse} of "
+      f"{len(brier)} symbols, despite matching on AUC")'''),
+    md("""## What the flexible model bought
+
+The signal is essentially one-dimensional — queue imbalance — and a model free to
+find interactions in eight features mostly finds ones that do not survive to the
+next week."""),
+    code('''names = list(np.load(os.path.join("..", "results", "feature_names.npy")))
+coef = pd.DataFrame({sym: LC[f"{sym}|coefficients"] for sym in order}, index=names)
+print(coef.round(3).to_string())
+delta = common["boosted_all"] - common["logistic_imbalance"]
+print(f"\\nboosted trees minus logistic-on-imbalance: median {delta.median():+.4f}; "
+      f"better on {(delta > 0).sum()} of {len(delta)} symbols")'''),
+    md("""## What this chapter established
+
+The queue-reactive model of chapter 04, fitted only to counts of events against
+queue sizes, **ranks the next price move as well as a regression fitted to the
+moves themselves**.  Its probabilities, though, are wrong: it is confident where
+the data is not.
+
+Predictability tracks the tick, as everything here does.  A stock whose spread is
+pinned at one tick carries queues that mean something; a stock whose spread is
+fifty ticks carries almost no queue and almost no signal.  Chapter 08 takes the
+same signal and asks what it is worth in money."""),
+]
+
+# --------------------------------------------------------------------------
+NOTEBOOKS["08_agent_in_a_reacting_book.ipynb"] = [
+    md("""# 08 — An agent in a book that reacts, and the price of being blind
+
+Chapter 05's environment has no book in it.  Fills arrive as a Poisson process
+whose rate depends on where the quote sits, the mid diffuses on its own, and
+nothing connects a fill to what the price does next.  A maker there is never
+picked off.
+
+This one is chapter 04's book with a maker standing in it: the same estimated
+intensities, the same measured order sizes, the same regeneration law.  The maker
+rests one unit at each best, **its position in the queue is tracked**, and it
+trades only once the size in front of it is gone.  When a queue empties the price
+moves a tick.
+
+Adverse selection then needs no modelling at all.  Being filled on the bid means
+the bid queue was being consumed; a queue being consumed is one on its way to
+empty; and a bid queue that empties takes the price down.  The maker is bought
+into a falling price by the very mechanism that filled it."""),
+    code(HEADER + """
+A = pd.read_csv(os.path.join("..", "results", "agents.csv")).set_index("symbol")
+AC = dict(np.load(os.path.join("..", "results", "agents.npz")))
+print(f"{len(A)} symbols")"""),
+    md("""## The environment, rebuilt here and checked against the market
+
+Nothing is loaded from a pickle: the environment is reconstructed from the same
+intensity tables the notebook reads off disk.  The first thing to ask is whether
+the discrete-time approximation reproduces the continuous-time simulator of
+chapter 04 — which was itself compared against the market there, and found to be
+faithful on the one-tick names and to under-predict the wide-spread ones.
+
+The environment reflects the queue at the size below which the real book spends
+99% of its day.  Without that cap it inherits chapter 04's runaway: above about
+ten average sizes the estimated intensities imply a drift of tens of average
+sizes per second, an artifact of a few seconds' residence time, and every
+simulated book climbs into it and freezes."""),
+    code('''from hfx.mm.queue_env import QueueBookEnv, OUT, AT_TOUCH
+from hfx.mm import queue_agent as qa
+
+def environment(sym, seed=11, batch=4096, rebate=0.0):
+    lam = curve(C, sym, DAY, "qr_lambda")
+    seconds = curve(C, sym, DAY, "qr_time") / 1e9
+    counts = np.nan_to_num(lam) * seconds                  # rates back to counts
+    regen = curve(C, sym, DAY, "qr_regen").sum(axis=0).astype(float)
+    return QueueBookEnv.from_tables(counts, seconds * 1e9,
+                                    curve(C, sym, DAY, "size_hist"), regen,
+                                    dt=0.02, batch=batch, rebate=rebate,
+                                    rng=np.random.default_rng(seed))
+
+rows = []
+for sym in ["SIRI", "INTC", "CSCO", "MSFT", "AAPL"]:
+    env = environment(sym, batch=2048)
+    moved = 0
+    for _ in range(400):
+        _o, _r, info = env.step(np.full(env.batch, OUT), np.full(env.batch, OUT))
+        moved += int(info["moved"].sum())
+    day = P[(P.symbol == sym) & (P.date == DAY)].iloc[0]
+    reference = 1.0 / day.qr_holding_s if day.qr_holding_s > 0 else np.nan
+    rows.append({"symbol": sym, "spread (ticks)": day.median_spread_ticks,
+                 "queue cap": env.q_max,
+                 "this environment, moves/s": moved / (400 * env.dt * env.batch),
+                 "chapter 04 simulator, moves/s": reference})
+frame = pd.DataFrame(rows)
+frame["ratio"] = frame["this environment, moves/s"] / frame["chapter 04 simulator, moves/s"]
+print(frame.round(3).to_string(index=False))'''),
+    md("""The discrete-time environment tracks the continuous-time simulator to
+within 1.0–1.4 on INTC, CSCO, MSFT and AAPL.  SIRI is the exception, at about
+six times: its queues are the deepest in the panel — the cap sits at 44 average
+sizes against 12 for AAPL — and the two approximations disagree badly out there.
+They bracket the market rather than agree with it, the real rate being 0.056
+changes a second against 0.027 for the simulator and 0.167 here, so nothing SIRI
+contributes below should be read as more than a sign.
+
+## What the maker earns, and what the book is worth
+
+Two families of policy, searched over the **same simulated price paths**.  The
+environment's randomness does not depend on the agent — the maker's order is
+never part of the queue, so it never changes the book — which makes every
+comparison paired and cancels most of the noise.
+
+* **blind**: quote unless the inventory says otherwise.  Exactly the information
+  the closed form of chapter 05 uses.
+* **sighted**: the same, plus a refusal to bid into a thin bid queue."""),
+    code('''fig, axes = subplots(1, 3, figsize=(13, 3.6))
+for ax, sym in zip(axes, ["SIRI", "INTC", "CSCO"]):
+    frame = pd.DataFrame(AC[f"{sym}|search"],
+                         columns=["inventory_max", "imbalance_min", "reward", "se",
+                                  "fills", "inv"])
+    pivot = frame.pivot_table(index="inventory_max", columns="imbalance_min", values="reward")
+    im = ax.imshow(pivot.to_numpy() * 1e4, origin="lower", cmap="RdBu_r",
+                   vmin=-8, vmax=8, aspect="auto")
+    ax.set_xticks(range(pivot.shape[1]))
+    ax.set_xticklabels([f"{v:+.1f}" for v in pivot.columns], fontsize=7)
+    ax.set_yticks(range(pivot.shape[0])); ax.set_yticklabels(pivot.index)
+    ax.set_title(sym); ax.set_xlabel("quote only when imbalance >=")
+axes[0].set_ylabel("stop quoting past inventory")
+fig.colorbar(im, ax=axes, label="reward per second, x 1e-4", fraction=0.02)'''),
+    md("""The left column of each panel is the blind family: no imbalance rule at
+all.  It is red everywhere, and it gets *redder* as the maker is allowed to quote
+more.  One column to the right — refusing only the most lopsided books — the sign
+flips."""),
+    code('''show = A[["blind_reward", "sighted_reward", "value_of_sight", "sighted_imbalance_min",
+          "blind_fills", "sighted_fills", "blind_se", "sighted_se"]].copy()
+for c in ["blind_reward", "sighted_reward", "value_of_sight", "blind_se", "sighted_se"]:
+    show[c] *= 1e4
+print(show.round(3).to_string())
+print(f"\\nthe blind maker loses money on {(A.blind_reward < 0).sum()} of {len(A)} symbols")
+print(f"seeing the book is worth {A.value_of_sight.median() * 1e4:+.2f}e-4 per second at the "
+      f"median, against standard errors of {A[['blind_se', 'sighted_se']].max().max() * 1e4:.3f}e-4")
+assert (A.value_of_sight > 0).all()'''),
+    md("""## The market-design reading
+
+A rebate is paid per fill and does not change the book, and the environment's
+randomness does not depend on the agent, so for any fixed policy
+
+$$\\text{reward}(z) = \\text{reward}(0) + z \\times \\text{fills per second}$$
+
+*exactly*.  Each family's frontier is the upper envelope of a set of straight
+lines and costs nothing beyond the simulations already run.  Where it crosses zero
+is the rebate an exchange would have to pay to keep that kind of maker in business
+— which is what chapter 06 solves for, arrived at from the opposite direction."""),
+    code('''fig, ax = subplots(figsize=(6.4, 3.8))
+for sym in ["SIRI", "INTC", "CSCO"]:
+    colour = colour_for(P[P.symbol == sym].median_spread_ticks.mean())
+    for family, style in [("blind", "--"), ("sighted", "-")]:
+        f = AC[f"{sym}|frontier_{family}"]
+        ax.plot(f[:, 0] * 100, f[:, 1] * 1e4, style, color=colour, label=f"{sym} {family}")
+ax.axhline(0, color="0.5", lw=1)
+ax.set_xlabel("make rebate (ticks)"); ax.set_ylabel("reward per second, x 1e-4")
+ax.set_title("What an exchange would have to pay"); ax.legend(fontsize=7, ncol=2)
+plt.tight_layout()
+print(A[["break_even_rebate_blind", "break_even_rebate_sighted"]].mul(100).round(3).to_string())'''),
+    md("""## The methodological result, which is the one worth carrying away
+
+Four ways of solving this were tried, and only one worked.
+
+The per-step reward is dominated by marking inventory across a price move: with a
+few units of inventory and a one-cent tick its standard deviation is near
+$3\\times10^{-2}$, while the difference in value between two quoting policies is
+near $2\\times10^{-5}$ per step.  Any method that estimates a value function from
+single-step rewards needs of order $(3\\times10^{-2}/2\\times10^{-5})^2 \\approx
+10^{6}$ samples **per state-action cell** before its argmax is anything but the
+luckiest estimate.
+
+* **Tabular Q-learning** — the algorithm that recovers the closed form in chapter
+  05 — undertrades here and is beaten by quoting at the touch unconditionally.
+* **Model-based tabular RL**, averaging rewards and then solving, works at 13
+  states and fails at 156.
+* **A deep Q-network** does not converge: its loss *rises* through training, the
+  signature of a bootstrap chasing noise.
+* **Direct policy comparison on common random numbers** resolves the same effect
+  at sixty standard errors, because the noise is shared between the policies being
+  compared and cancels.
+
+None of that is a fact about market making.  It is a fact about where the variance
+sits, and it is worth checking before reaching for a learner."""),
+    code('''if "deep_reward" in A.columns and A.deep_reward.notna().any():
+    print(A[["naive_reward", "blind_reward", "sighted_reward", "deep_reward"]].mul(1e4).round(3).to_string())
+    print(f"\\nthe deep agent beats the sighted threshold policy on "
+          f"{(A.deep_reward > A.sighted_reward).sum()} of {len(A)} symbols")
+    fig, ax = subplots(figsize=(5.8, 3.2))
+    for sym in list(A.index)[:4]:
+        key = f"{sym}|deep_loss"
+        if key in AC:
+            ax.plot(np.convolve(AC[key], np.ones(50) / 50, mode="valid"), label=sym)
+    ax.set_xlabel("gradient step"); ax.set_ylabel("smoothed TD loss")
+    ax.set_title("A loss that rises is a bootstrap chasing noise"); ax.legend(fontsize=7)
+    plt.tight_layout()
+else:
+    print("torch not installed: the deep variant is skipped, as it is in CI")'''),
+    md("""## What this chapter established
+
+In a book whose price moves because queues empty, **a market maker that cannot see
+the book loses money at the touch**, and no inventory rule rescues it — quoting
+more only loses faster.  A single rule that refuses to buy when the bid queue is
+thin turns the same business profitable.  That difference, measured on identical
+simulated price paths, is what the order book is worth to a maker.
+
+It also answers chapter 06's question from the other side.  An exchange facing
+blind makers must pay them to stay; facing makers who can read the queues, it need
+not.  The rebate is the price of the information the maker lacks."""),
+]
+
 
 def build(name, cells):
     nb = nbf.v4.new_notebook()

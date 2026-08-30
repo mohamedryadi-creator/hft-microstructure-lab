@@ -15,7 +15,11 @@ computation follows.
 | File | Contents |
 |---|---|
 | `panel.csv` | One row per (symbol, day): fitted exponents, spreads, volatilities by four estimators, queue statistics, and the quality flags that say whether each fit can be trusted |
-| `curves.npz` | Per (symbol, day), keyed `SYMBOL\|DATE\|name`: signature plots, Hawkes kernels and their implied variance curves, queue-reactive intensity tables, event-size and fill-probability histograms |
+| `curves.npz` | Per (symbol, day), keyed `SYMBOL\|DATE\|name`: signature plots, Hawkes kernels and their implied variance curves, queue-reactive intensity tables (marginal and joint), event-size and fill-probability histograms |
+| `learning.csv` | Chapter 07: one row per (symbol, model, scope) with AUC, Brier, log loss and accuracy on the held-out days |
+| `learning.npz` | Chapter 07: the analytic, fitted and empirical probability surfaces on the joint queue grid, calibration curves, and the logistic coefficients |
+| `agents.csv` | Chapter 08: the best blind and sighted quoting policies per symbol, their standard errors, and the rebate each family needs to break even |
+| `agents.npz` | Chapter 08: the full policy-search grid, the rebate frontiers, and the deep agent's training loss |
 
 ## Reading the quality flags before the numbers
 
@@ -41,6 +45,15 @@ rather than hiding it.
 - `qr_moves_simulated` — how many price moves the queue-reactive simulation
   completed before its step budget ran out. Below about 200 the derived
   volatility is not reported at all.
+- `fallback_share` in `learning.csv` — the share of states where the joint
+  two-queue intensities had too little residence time to be estimated and the
+  own-queue rates stood in. It runs from 0.16 on INTC to 0.95 on ISRG, and it is
+  the same tick axis as everything else: the joint tables are only usable where
+  the book actually visits the grid.
+- `blind_se` and `sighted_se` in `agents.csv` — standard errors across simulation
+  seeds. The environment's randomness does not depend on the agent, so policies
+  are compared on identical price paths and these are paired errors, which is why
+  they are two orders of magnitude below the effect they are measuring.
 
 ## Data provenance
 

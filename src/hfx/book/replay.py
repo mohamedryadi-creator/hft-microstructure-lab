@@ -41,6 +41,10 @@ from ..itch.spec import CLOSE_NS, OPEN_NS
 
 TICK = 100                 # one cent, in the wire unit of 1/10 000 dollar
 NQ = 64                    # queue-size buckets, in units of the average event size
+NQ2 = 24                   # coarser grid for the *joint* two-queue tables
+SAMPLE_NS = 500_000_000    # state snapshots every half second, for chapter 07
+FLOW_FAST_NS = 1_000_000_000     # signed-flow memories, one second ...
+FLOW_SLOW_NS = 10_000_000_000    # ... and ten
 NSZ = 48                   # event-size buckets, log-spaced in units of the AES
 SIZE_LO, SIZE_HI = 0.02, 50.0
 MAX_SPREAD_TICKS = 200
@@ -68,6 +72,7 @@ class ReplayOutput:
     qr_shares: np.ndarray = None            # [level, side, kind, bucket] total shares
     size_hist: np.ndarray = None            # [kind, NSZ] event sizes in AES units
     regen_hist: np.ndarray = None           # [side, bucket] queue right after a price change
+    states: dict = field(default_factory=dict)   # book snapshots on a time grid
     fill_counts: np.ndarray = None          # [joined?, ahead bucket, outcome]
     minute_counts: np.ndarray = None        # [minute of session, kind] event counts
     stats: dict = field(default_factory=dict)
@@ -111,13 +116,30 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
     imbalance_time = _buckets(21)
     qr_events = np.zeros((N_LEVELS, 2, 3, NQ), dtype=np.int64)
     qr_time = np.zeros((N_LEVELS, 2, NQ), dtype=np.int64)
-    qr_events2 = np.zeros((3, 2, NQ, NQ), dtype=np.int64)
-    qr_time2 = np.zeros((NQ, NQ), dtype=np.int64)
+    # The joint tables live on a coarser grid than the marginal ones.  A 24 by 24
+    # grid holds 98% of the occupation mass and costs 32 kB a symbol-day, which
+    # is committable; 64 by 64 would be 230 kB and mostly zeros.  The last row
+    # and column are overflow bins and chapter 07 excludes them.
+    qr_events2 = np.zeros((3, 2, NQ2, NQ2), dtype=np.int64)
+    qr_time2 = np.zeros((NQ2, NQ2), dtype=np.int64)
     qr_shares = np.zeros((N_LEVELS, 2, 3, NQ), dtype=np.int64)
     size_hist = np.zeros((3, NSZ), dtype=np.int64)
     regen_hist = np.zeros((2, NQ), dtype=np.int64)
     fill_counts = np.zeros((2, NQ, 3), dtype=np.int64)   # joined/improved x ahead x outcome
     minute_counts = np.zeros((391, 4), dtype=np.int64)   # add / cancel / trade / replace
+
+    # Chapter 07's snapshots: the book as it stands on a regular clock, not just
+    # at the moments it changes.  Sampling only at price changes would look at
+    # freshly regenerated queues -- the least informative instant there is -- and
+    # would flatter any model of how informative the book is.
+    s_ts, s_bid, s_ask = array("q"), array("q"), array("q")
+    s_qb0, s_qa0, s_qb1, s_qa1 = (array("q") for _ in range(4))
+    s_fast, s_slow = array("d"), array("d")
+    s_since = array("q")
+    next_sample = OPEN_NS
+    flow_fast = flow_slow = 0.0
+    flow_ts = OPEN_NS
+    last_change_ts = OPEN_NS
 
     t_ts, t_px, t_sz, t_sd = array("q"), array("q"), array("q"), array("b")
     t_bid, t_ask, t_bsz, t_asz = array("q"), array("q"), array("q"), array("q")
@@ -154,9 +176,25 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
     m_px = m_sz = m_hidden_sz = m_n = 0
     m_bid = m_ask = m_bsz = m_asz = 0
 
+    def decay_flow(to_ts):
+        """Carry the two exponentially weighted signed flows forward to ``to_ts``."""
+        nonlocal flow_fast, flow_slow, flow_ts
+        gap = to_ts - flow_ts
+        if gap > 0:
+            flow_fast *= np.exp(-gap / FLOW_FAST_NS)
+            flow_slow *= np.exp(-gap / FLOW_SLOW_NS)
+            flow_ts = to_ts
+
     def flush_trade():
-        nonlocal m_ts, m_px, m_sz, m_n, m_hidden_sz
+        nonlocal m_ts, m_px, m_sz, m_n, m_hidden_sz, flow_fast, flow_slow
         if m_n and m_sz:
+            # Signed traded size, in average event sizes, with one-second and
+            # ten-second memories.  The same exponential kernels chapter 02 fits
+            # to the flow, used here as a feature rather than estimated.
+            decay_flow(m_ts)
+            signed = m_side * m_sz / aes
+            flow_fast += signed
+            flow_slow += signed
             t_ts.append(m_ts)
             t_px.append(m_px // m_sz)
             t_sz.append(m_sz)
@@ -204,7 +242,7 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
                         a0 = a0 if a0 < NQ else NQ - 1
                         queue_time[0, b0] += dt
                         queue_time[1, a0] += dt
-                        qr_time2[b0, a0] += dt
+                        qr_time2[min(b0, NQ2 - 1), min(a0, NQ2 - 1)] += dt
                         tot = qb[0] + qa[0]
                         if tot:
                             k = int((qb[0] - qa[0]) / tot * 10 + 10.5)
@@ -214,6 +252,31 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
                             al = int(qa[lv] / aes)
                             qr_time[lv, 0, bl if bl < NQ else NQ - 1] += dt
                             qr_time[lv, 1, al if al < NQ else NQ - 1] += dt
+
+            # --- snapshots, on the clock ---------------------------------------
+            # The book does not move between messages, so every grid point in
+            # [prev_ts, ts) carries the state left by the previous one.  Emitting
+            # one row per grid point rather than one per message is what makes
+            # the sample uniform *in time*: sampling on messages would thin out
+            # the quiet stretches, and a quiet book is exactly the state whose
+            # predictability chapter 07 is asking about.
+            if have_state and bid and ask and prev_ts >= OPEN_NS and next_sample < ts:
+                while next_sample < ts and next_sample <= CLOSE_NS:
+                    decay_flow(next_sample)
+                    s_ts.append(next_sample)
+                    s_bid.append(bid)
+                    s_ask.append(ask)
+                    s_qb0.append(qb[0])
+                    s_qa0.append(qa[0])
+                    s_qb1.append(qb[1])
+                    s_qa1.append(qa[1])
+                    s_fast.append(flow_fast)
+                    s_slow.append(flow_slow)
+                    s_since.append(next_sample - last_change_ts)
+                    next_sample += SAMPLE_NS
+            elif next_sample < ts:
+                while next_sample < ts:
+                    next_sample += SAMPLE_NS
 
             # --- apply the message ---------------------------------------------
             if code == _A or code == _F:
@@ -350,7 +413,10 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
                 if new_ask != ask and new_ask and new_asz:
                     ra = int(new_asz / aes)
                     regen_hist[1, ra if ra < NQ else NQ - 1] += 1
-            if new_bid != bid or new_ask != ask or not quoted:
+            price_changed = new_bid != bid or new_ask != ask
+            if price_changed and in_session:
+                last_change_ts = ts
+            if price_changed or not quoted:
                 if in_session and new_bid and new_ask:
                     quoted = True
                     q_ts.append(ts)
@@ -394,6 +460,18 @@ def replay(events, symbol: str, date: str, aes: float | None = None) -> ReplayOu
     out.qr_time = qr_time
     out.qr_events2 = qr_events2
     out.qr_time2 = qr_time2
+    out.states = {
+        "ts": np.frombuffer(s_ts, dtype=np.int64).copy(),
+        "bid": np.frombuffer(s_bid, dtype=np.int64).copy(),
+        "ask": np.frombuffer(s_ask, dtype=np.int64).copy(),
+        "q_bid": np.frombuffer(s_qb0, dtype=np.int64).copy(),
+        "q_ask": np.frombuffer(s_qa0, dtype=np.int64).copy(),
+        "q_bid2": np.frombuffer(s_qb1, dtype=np.int64).copy(),
+        "q_ask2": np.frombuffer(s_qa1, dtype=np.int64).copy(),
+        "flow_fast": np.frombuffer(s_fast, dtype=np.float64).copy(),
+        "flow_slow": np.frombuffer(s_slow, dtype=np.float64).copy(),
+        "ns_since_change": np.frombuffer(s_since, dtype=np.int64).copy(),
+    }
     out.qr_shares = qr_shares
     out.size_hist = size_hist
     out.regen_hist = regen_hist
@@ -456,4 +534,4 @@ def _count_event(qr_events, qr_events2, qr_shares, size_hist,
     if lv == 0:
         b0 = int(qb[0] / aes)
         a0 = int(qa[0] / aes)
-        qr_events2[kind, s, b0 if b0 < NQ else NQ - 1, a0 if a0 < NQ else NQ - 1] += 1
+        qr_events2[kind, s, min(b0, NQ2 - 1), min(a0, NQ2 - 1)] += 1
