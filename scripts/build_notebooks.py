@@ -452,22 +452,43 @@ the same pass that rebuilds the book."""),
     code('''from hfx.queue import reactive as qr
 from hfx.book.replay import NQ, size_bucket_centres
 
-fig, axes = subplots(1, 3, figsize=(13, 3.4))
+fig, axes = subplots(1, 3, figsize=(13, 3.6))
 for ax, sym in zip(axes, ["SIRI", "INTC", "AAPL"]):
     lam = curve(C, sym, DAY, "qr_lambda")
+    seconds = curve(C, sym, DAY, "qr_time") / 1e9
     q = np.arange(lam.shape[1])
+    # The time spent in each state is the denominator of every rate above it.
+    ax2 = ax.twinx()
+    ax2.fill_between(q, seconds, color="0.85", zorder=0)
+    ax2.set_ylim(0, seconds.max() * 3.2); ax2.set_yticks([]); ax2.grid(False)
     for i, label in enumerate(["limit orders", "cancellations", "market orders"]):
-        ax.plot(q, lam[i], label=label)
+        ax.plot(q, lam[i], label=label, zorder=3)
+    ax.set_zorder(ax2.get_zorder() + 1); ax.patch.set_visible(False)
     ax.set_yscale("log"); ax.set_xlim(0, 25); ax.set_title(sym)
     ax.set_xlabel("queue size (average event sizes)")
-axes[0].set_ylabel("intensity (per second)"); axes[0].legend()
+axes[0].set_ylabel("intensity (per second)")
+axes[0].plot([], [], color="0.85", lw=6, label="time spent in the state")
+axes[0].legend(fontsize=8)
 plt.tight_layout()'''),
-    md("""The shapes are the content of the model, and they are the ones the
-model predicts.  Cancellations rise with the queue, roughly in proportion:
-more resting size, more of it to pull.  Market orders *fall* sharply with the
-queue -- takers arrive when the queue in front of them is thin, which is the
-"queue-reactive" effect the model is named for.  Limit orders are close to flat,
-with a lift at the very short queues where the level is about to disappear."""),
+    md("""**Market orders fall sharply with the queue.** Between an empty best
+queue and one holding five average orders the market-order intensity drops by a
+factor of 9 on SIRI, 29 on INTC and 9 on MSFT: takers arrive when the queue in
+front of them is thin, which is the effect the model is named for and the reason
+a queue that starts to empty tends to keep emptying.
+
+**Limit orders and cancellations move together, and much less.** They track each
+other to within a tenth over most of the range -- which is exactly what keeps a
+queue alive -- with cancellations roughly doubling between an empty queue and one
+holding eight average orders on INTC and MSFT.
+
+**Beyond about ten average sizes, read the curves with the residence time next to
+them.** Both intensities climb steeply there, and the reason is visible in the
+denominator: INTC spends 69 seconds of its day with 20 average orders resting at
+the best and 11 seconds with 30. Those states are entered and left by a single
+large order, so a count over a very short residence time is a large rate. The
+estimator is not wrong; the state is rare, and the third panel shows what that
+looks like on a name whose best queue holds under two average orders to begin
+with."""),
     md("""## What the estimated dynamics produce
 
 A queue does not move by one average event at a time: order sizes on Nasdaq

@@ -310,11 +310,22 @@ Estimation needs no optimiser: for a Markov jump process the maximum-likelihood
 intensity is $\hat\lambda_e(q) = N_e(q)/T(q)$, the count over the time spent in
 the state, and both counters are accumulated in the pass that rebuilds the book.
 
-**The estimated shapes are the ones the model predicts.** Cancellations rise
-roughly in proportion to the queue — more resting size, more of it to pull.
-Market orders **fall sharply** with the queue: takers arrive when the queue in
-front of them is thin, which is the effect the model is named for. Limit orders
-are close to flat with a lift at the very short queues.
+**The market-order intensity is the shape the model is named for.** Between an
+empty best queue and one holding five average orders it falls by a factor of 9 on
+SIRI, **29 on INTC** and 9 on MSFT: takers arrive when the queue in front of them
+is thin, which is why a queue that starts to empty tends to keep emptying. Limit
+orders and cancellations move together and far less — within a tenth of each
+other over most of the range, which is what keeps a queue alive — with
+cancellations roughly doubling between an empty queue and one holding eight
+average orders on INTC and MSFT.
+
+Beyond about ten average sizes both intensities climb steeply, and the reason is
+in the denominator rather than in the market: INTC spends 69 seconds of its day
+with twenty average orders resting at the best and eleven seconds with thirty.
+Those states are entered and left by a single large order, so a count over a very
+short residence time is a large rate. The estimator is not wrong there; the state
+is rare, and the notebook plots the residence time alongside so that the reader
+can see which parts of the curve are worth reading.
 
 ### 7.1 A finding that contradicted the plan
 
