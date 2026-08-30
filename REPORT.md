@@ -41,8 +41,10 @@ measure.
   never validated says nothing at all.
 
 Every chapter has both legs, and the repository's test suite is the first one:
-82 tests, none touching the network, several of them Monte Carlo studies whose
-tolerances are derived rather than tuned.
+86 tests, none touching the network, several of them Monte Carlo studies whose
+tolerances are derived rather than tuned. Four cover the optional deep agent and
+skip where torch is absent, which is how CI runs — the point of an optional
+extra being that nothing else depends on it.
 
 ## 3. The data
 
@@ -733,7 +735,7 @@ anyway.
 
 ```bash
 make setup        # install the package and the test dependencies
-make test         # 82 tests, no network
+make test         # 86 tests, no network
 make data         # stream the seven ITCH days   (~90 min, ~31 GB transferred)
 make study        # rebuild results/ from the extracted messages   (~15 min)
 make build        # regenerate the notebooks from source

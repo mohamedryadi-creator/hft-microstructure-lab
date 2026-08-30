@@ -84,7 +84,7 @@ had no power, not that the model was right.
 | The maker's ergodic gain λ_max/k | Against value iteration | 0.4217 vs 0.4214 |
 | The fee model at zero rebate | Against the market-making chapter | identical |
 
-**82 tests**, all passing, none touching the network. **Eight notebooks**, executed
+**86 tests**, all passing, none touching the network — four of them cover the optional deep agent and skip when torch is absent, as they do in CI. **Eight notebooks**, executed
 with outputs committed, each carrying `assert` checkpoints — a notebook that runs
 has verified its own results.
 
@@ -192,7 +192,7 @@ src/hfx/
 notebooks/    01..08, thin, executed, outputs committed
 results/      panel.csv, curves.npz, learning.* and agents.* -- what makes the
               notebooks run offline
-tests/        82 tests, none touching the network
+tests/        86 tests, none touching the network
 ```
 
 ## References
